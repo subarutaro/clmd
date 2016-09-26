@@ -1,0 +1,221 @@
+#include "md.hxx"
+
+MD::MD(const int _nmol,const DorF _dens,const DorF _temp){
+  cout << "# ---construct MD---" << endl;
+
+  ndim=1;
+  while(_nmol > 4*ndim*ndim*ndim) ndim++;
+  nmol = 4*ndim*ndim*ndim;
+  if(nmol != _nmol)
+    cerr << "warning: # of molecules(= " << _nmol << ") must be 4*n*n*n. changed to nearest one (= " << nmol << ")." << endl;
+
+  dt   = 0.000930f;
+  dth  = 0.5f * dt;
+  dens = _dens;
+  temp = _temp;
+
+  cs = powf((DorF)nmol/dens,1./3.);
+  csh = 0.5f * cs;
+
+  if(csh > 5.f) rcut = 5.f;
+  else          rcut = csh;
+
+  r = (DorF*)calloc(3*nmol,sizeof(DorF));
+  assert(r != NULL);
+  rx = &r[0];
+  ry = &r[nmol];
+  rz = &r[2*nmol];
+
+  v = (DorF*)calloc(3*nmol,sizeof(DorF));
+  assert(v != NULL);
+  vx = &v[0];
+  vy = &v[nmol];
+  vz = &v[2*nmol];
+
+  f = (DorF*)calloc(3*nmol,sizeof(DorF));
+  assert(f != NULL);
+  fx = &f[0];
+  fy = &f[nmol];
+  fz = &f[2*nmol];
+}
+
+MD::~MD(){
+  free(r);
+  free(v);
+  free(f);
+}
+
+void MD::SetCoorFCC(){
+  double unit = cs / (double)ndim;
+  {
+    int i = 0;
+    for(int x=0;x<ndim;x++){
+      for(int y=0;y<ndim;y++){
+	for(int z=0;z<ndim;z++){
+	  r[0*nmol+i] = unit * x;
+	  r[1*nmol+i] = unit * y;
+	  r[2*nmol+i] = unit * z;
+	  i++;
+	  r[0*nmol+i] = unit * (x+0.5);
+	  r[1*nmol+i] = unit * (y+0.5);
+	  r[2*nmol+i] = unit * z;
+	  i++;
+	  r[0*nmol+i] = unit * x;
+	  r[1*nmol+i] = unit * (y+0.5);
+	  r[2*nmol+i] = unit * (z+0.5);
+	  i++;
+	  r[0*nmol+i] = unit * (x+0.5);
+	  r[1*nmol+i] = unit * y;
+	  r[2*nmol+i] = unit * (z+0.5);
+	  i++;
+	}
+      }
+    }
+    if(i != nmol){
+      cerr << "error: # of moleucles in SetCoorFCC != nmol." << endl;
+      exit(EXIT_FAILURE);
+    }
+  }
+  for(int i=0;i<nmol;i++){
+    r[0*nmol+i] -= 0.5*cs;
+    r[1*nmol+i] -= 0.5*cs;
+    r[2*nmol+i] -= 0.5*cs;
+  }
+}
+
+void MD::SetVelRandom(){
+  for(int i=0;i<nmol;i++){
+    v[0*nmol+i] = (double)rand()/(double)RAND_MAX;
+    v[1*nmol+i] = (double)rand()/(double)RAND_MAX;
+    v[2*nmol+i] = (double)rand()/(double)RAND_MAX;
+  }
+  KillMomentum();
+  VelocityScaling();
+}
+
+void MD::VelocityScaling(){
+  CalcKineticEnergy();
+  const double scale = sqrt(1.5*nmol*temp/kin);
+  for(int i=0;i<nmol;i++){
+    v[0*nmol+i] *= scale;
+    v[1*nmol+i] *= scale;
+    v[2*nmol+i] *= scale;
+  }
+  kin *= scale*scale;
+  KillMomentum();
+}
+
+void MD::KillMomentum(){
+  DorF mom[3] = {0.f,0.f,0.f};
+  for(int i=0;i<nmol;i++){
+    mom[0] += v[0*nmol+i];
+    mom[1] += v[1*nmol+i];
+    mom[2] += v[2*nmol+i];
+  }
+  mom[0] /= (double)nmol;
+  mom[1] /= (double)nmol;
+  mom[2] /= (double)nmol;
+  for(int i=0;i<nmol;i++){
+    v[0*nmol+i] -= mom[0];
+    v[1*nmol+i] -= mom[1];
+    v[2*nmol+i] -= mom[2];
+  }
+}
+
+void MD::CalcKineticEnergy(){
+  kin = 0.0;
+  for(int i=0;i<nmol;i++){
+    const double vx = v[0*nmol+i];
+    const double vy = v[1*nmol+i];
+    const double vz = v[2*nmol+i];
+    kin += vx*vx + vy*vy + vz*vz;
+  }
+  kin *= 0.5f;
+}
+
+void MD::IntegrateCoor(){
+  for(int i=0;i<nmol;i++){
+    r[0*nmol+i] += v[0*nmol+i] * dt;
+    r[1*nmol+i] += v[1*nmol+i] * dt;
+    r[2*nmol+i] += v[2*nmol+i] * dt;
+      if(r[0*nmol+i] <= -csh) r[0*nmol+i] += cs; if(r[0*nmol+i] > csh) r[0*nmol+i] -= cs;
+      if(r[1*nmol+i] <= -csh) r[1*nmol+i] += cs; if(r[1*nmol+i] > csh) r[1*nmol+i] -= cs;
+      if(r[2*nmol+i] <= -csh) r[2*nmol+i] += cs; if(r[2*nmol+i] > csh) r[2*nmol+i] -= cs;
+  }
+}
+
+void MD::IntegrateVel(){
+  for(int i=0;i<nmol;i++){
+    v[0*nmol+i] += f[0*nmol+i] * 0.5*dt;
+    v[1*nmol+i] += f[1*nmol+i] * 0.5*dt;
+    v[2*nmol+i] += f[2*nmol+i] * 0.5*dt;
+  }
+}
+
+void MD::CalcForce(){
+  for(int i=0;i<3*nmol;i++) f[i] = 0.0;
+  pot = 0.0;
+
+  const double csh = 0.5*cs;
+
+  for(int i=0;i<nmol;i++){
+    const double rxi = r[0*nmol+i];
+    const double ryi = r[1*nmol+i];
+    const double rzi = r[2*nmol+i];
+    double fxi = 0.0;
+    double fyi = 0.0;
+    double fzi = 0.0;
+    for(int j=0;j<nmol;j++){
+      if(i==j) continue;
+      double dx = rxi - r[0*nmol+j];
+      double dy = ryi - r[1*nmol+j];
+      double dz = rzi - r[2*nmol+j];
+      if(dx <= -csh) dx += cs; if(dx > csh) dx -= cs;
+      if(dy <= -csh) dy += cs; if(dy > csh) dy -= cs;
+      if(dz <= -csh) dz += cs; if(dz > csh) dz -= cs;
+
+      const double r02 = dx*dx + dy*dy + dz*dz;
+      const double r02i = 1.0 / r02;
+      const double r06i = r02i * r02i *r02i;
+
+      pot += 2.0 * r06i * (r06i - 1.0);
+      const double ftmp = 48.0 * r06i * (r06i - 0.5) * r02i;
+      fxi += ftmp * dx;
+      fyi += ftmp * dy;
+      fzi += ftmp * dz;
+    }
+    f[0*nmol+i] = fxi;
+    f[1*nmol+i] = fyi;
+    f[2*nmol+i] = fzi;
+  }
+}
+
+void MD::OutputCDV(const string filename){
+  ofstream ofs(filename.c_str());
+  ofs << "'box_sx=" << -csh << ",box_ex="<< csh;
+  ofs << ",box_sy=" << -csh << ",box_ey="<< csh;
+  ofs << ",box_sz=" << -csh << ",box_ez="<< csh;
+  ofs << endl;
+  for(int i=0;i<nmol;i++){
+    ofs << ' ' << i     << " " << "0";
+    ofs << ' ' << r[0*nmol+i] << ' ' << r[1*nmol+i] << ' ' << r[2*nmol+i];
+    ofs << ' ' << v[0*nmol+i] << ' ' << v[1*nmol+i] << ' ' << v[2*nmol+i];
+    ofs << ' ' << f[0*nmol+i] << ' ' << f[1*nmol+i] << ' ' << f[2*nmol+i];
+    ofs << endl;
+  }
+}
+
+void MD::DisplayEnergies(ostream &os){
+  static int s = 0;
+  os << s++ << ' ' << pot << ' ' << kin << ' ' << pot + kin << endl;
+}
+
+void MD::DisplayConditions(ostream &os){
+  os << "# Number of molecules:\t" << nmol   << endl;
+  os << "# Density:\t"        << dens        << endl;
+  os << "# Temperature:\t"    << temp        << endl;
+  os << "# Cell size:\t"      << cs          << endl;
+  os << "# Cutoff radii:\t"   << rcut        << endl;
+  os << "# Delta time:\t"     << dt << ' ' << dth << endl;
+  os << endl;
+}

@@ -1,0 +1,5 @@
+ndevice		1
+device_index	0 1
+src_path	md.cl
+bin_path	device0.bin
+kernel_name	molecular_dynamics
